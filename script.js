@@ -102,7 +102,9 @@ async function submitAuth(e) {
 
 /* ---------- views ---------- */
 function thumb(t) {
-  return t.imageUrl ? `<img class="th" src="${esc(t.imageUrl)}" alt="">` : `<div class="th">${esc((t.name || '?')[0].toUpperCase())}</div>`;
+  return t.imageUrl
+    ? `<img class="th" src="${esc(t.imageUrl)}" alt="">`
+    : `<div class="th">${esc((t.name || '?')[0].toUpperCase())}</div>`;
 }
 function render(html) { closeDetail(); app.innerHTML = html; window.scrollTo(0, 0); }
 
@@ -132,33 +134,33 @@ function viewHome() {
     </div>`);
 }
 function viewAdd() {
-  pickedFile = null;
   render(`<h2>Add a thing</h2><p class="sub">Anything people can argue about.</p>
     <form id="addForm">
-  <label>
-    Name
-    <input type="text" id="fName" maxlength="80" required>
-  </label>
+      <label>
+        Name
+        <input type="text" id="fName" maxlength="80" required>
+      </label>
 
-  <label>
-    Image URL
-    <input
-      type="url"
-      id="fImageUrl"
-      placeholder="https://example.com/image.jpg"
-    >
-  </label>
+      <label>
+        Image URL
+        <input
+          type="url"
+          id="fImageUrl"
+          placeholder="https://example.com/image.jpg"
+        >
+      </label>
 
-  <label>
-    Description
-    <textarea id="fDesc" maxlength="600"></textarea>
-  </label>
+      <label>
+        Description
+        <textarea id="fDesc" maxlength="600"></textarea>
+      </label>
 
-  <div class="row">
-    <button class="primary" id="fSave" type="submit">Add thing</button>
-    <button type="button" class="link" data-act="home">Cancel</button>
-  </div>
-</form>`);
+      <div class="row">
+        <button class="primary" id="fSave" type="submit">Add thing</button>
+        <button type="button" class="link" data-act="home">Cancel</button>
+      </div>
+    </form>`);
+
   $('#addForm').onsubmit = submitThing;
 }
 async function submitThing(e) {
