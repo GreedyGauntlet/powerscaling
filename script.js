@@ -1,7 +1,7 @@
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, collection, doc, getDocs, getDoc, setDoc, addDoc, increment,
+  getFirestore, collection, doc, getDocs, getDoc, setDoc, addDoc, deleteDoc, increment,
   serverTimestamp, runTransaction, query, orderBy, limit, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -29,7 +29,11 @@ let user = null;
 let things = [];
 let duel = null;
 let userVotes = new Set();
+let userUnknowns = new Set();
+let isWhitelisted = false;
+let isAdmin = false;
 let profileThingId = null;
+let username = "";
 let chatUnsub = null;
 let discussionUnsub = null;
 let discussionPairId = null;
@@ -66,11 +70,35 @@ async function loadUserVotes() {
   snap.forEach(d => userVotes.add(d.id));
 }
 
+async function loadUserUnknowns() {
+  userUnknowns.clear();
+  if (!user) return;
+  const snap = await getDocs(collection(db, 'users', user.uid, 'unknowns'));
+  snap.forEach(d => userUnknowns.add(d.id));
+}
+
+async function loadPermissions() {
+  isWhitelisted = false;
+  isAdmin = false;
+  if (!user) return;
+  const [w, a] = await Promise.all([
+    getDoc(doc(db, 'whitelist', user.uid)),
+    getDoc(doc(db, 'admins', user.uid))
+  ]);
+  isWhitelisted = w.exists() && w.data().enabled !== false;
+  isAdmin = a.exists() && a.data().enabled !== false;
+}
+
 async function loadProfile() {
   profileThingId = null;
+  username = '';
   if (!user) return;
   const snap = await getDoc(doc(db, 'users', user.uid));
-  if (snap.exists()) profileThingId = snap.data().profileThingId || null;
+  if (snap.exists()) {
+    const data = snap.data();
+    profileThingId = data.profileThingId || null;
+    username = data.username || '';
+  }
 }
 
 async function undoCharacterRanking(thingId) {
@@ -118,6 +146,15 @@ async function undoCharacterRanking(thingId) {
 
   await loadUserVotes();
   return votes.length;
+}
+
+async function markUnknown() {
+  if (!user || !duel) return;
+  const id = pairId(duel.a.id, duel.b.id);
+  await setDoc(doc(db, 'users', user.uid, 'unknowns', id), {
+    uid: user.uid, a: duel.a.id, b: duel.b.id, createdAt: serverTimestamp()
+  });
+  userUnknowns.add(id);
 }
 
 async function recordResult(winner, loser) {
@@ -231,7 +268,8 @@ function availableOpponents(anchor, extraExcluded = []) {
   const excluded = new Set([anchor.id, ...extraExcluded]);
   return things.filter(t =>
     !excluded.has(t.id) &&
-    !userVotes.has(pairId(anchor.id, t.id))
+    !userVotes.has(pairId(anchor.id, t.id)) &&
+    !userUnknowns.has(pairId(anchor.id, t.id))
   );
 }
 
@@ -289,6 +327,8 @@ async function submitAuth(e) {
   e.preventDefault();
   const email = $('#authEmail').value.trim();
   const password = $('#authPassword').value;
+  const usernameInput = $('#authUsername');
+  const requestedUsername = usernameInput ? usernameInput.value.trim() : '';
   const btn = $('#authSubmit');
   const isRegister = btn.dataset.mode === 'register';
 
@@ -298,7 +338,16 @@ async function submitAuth(e) {
 
   try {
     if (isRegister) {
-      await createUserWithEmailAndPassword(auth, email, password);
+      if (!/^[A-Za-z0-9_]{3,24}$/.test(requestedUsername)) {
+        throw new Error('Username must be 3-24 characters and use only letters, numbers, or underscores.');
+      }
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await setDoc(doc(db, 'users', cred.user.uid), {
+        username: requestedUsername,
+        email: cred.user.email || '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }, {merge: true});
     } else {
       await signInWithEmailAndPassword(auth, email, password);
     }
@@ -339,6 +388,7 @@ function viewLogin(mode = 'signin') {
     <h2>Which one is better?</h2>
     <p class="sub">Add things, then settle them two at a time. Everyone's votes build one shared leaderboard.</p>
     <form id="authForm" style="margin:0 auto;text-align:left">
+      ${register ? '<label>Username<input type="text" id="authUsername" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" autocomplete="username" required></label>' : ''}
       <label>Email<input type="email" id="authEmail" autocomplete="email" required></label>
       <label>Password<input type="password" id="authPassword" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="6" required></label>
       <button class="primary" id="authSubmit" data-mode="${register ? 'register' : 'signin'}" type="submit">${register ? 'Create account' : 'Sign in'}</button>
@@ -355,29 +405,94 @@ function viewHome() {
   render(`<h2>What now?</h2>
     <p class="sub">${things.length} thing${things.length === 1 ? '' : 's'} in the pool.</p>
     <div class="home">
-      <button class="tile" data-act="add"><b>Add a thing</b><span>Give it a name, a picture and a description.</span></button>
+      <button class="tile" data-act="add"><b>${isWhitelisted ? 'Add a thing' : 'Request a thing'}</b><span>${isWhitelisted ? 'Give it a name, a picture and a description.' : 'Suggest a character for an approved admin to review.'}</span></button>
       <button class="tile" data-act="rankmenu"><b>Rank things</b><span>Pick winners, one matchup at a time.</span></button>
       <button class="tile" data-act="board"><b>Leaderboard</b><span>See how everything stacks up.</span></button>
-      <button class="tile" data-act="chat"><b>Global chat</b><span>Talk with everyone using your selected profile picture.</span></button>
+      <button class="tile" data-act="chat"><b>Global chat</b><span>Talk with everyone using your selected profile picture.</span></button>${isAdmin ? '<button class="tile" data-act="requests"><b>Character requests</b><span>Review, approve, or deny submitted characters.</span></button>' : ''}
     </div>`);
 }
 
+function imagePreviewMarkup(url='') {
+  return url
+    ? `<div class="image-preview"><img id="imagePreviewImg" src="${esc(url)}" alt="Image preview"><div id="imagePreviewStatus" class="image-status">Loading preview...</div></div>`
+    : `<div class="image-preview empty" id="imagePreview"><div>No image preview yet.</div></div>`;
+}
+
+function bindImagePreview(inputId) {
+  const input = $('#' + inputId);
+  if (!input) return;
+  const update = () => {
+    const url = input.value.trim();
+    const holder = $('#imagePreview');
+    if (!url) {
+      if (holder) holder.outerHTML = imagePreviewMarkup();
+      return;
+    }
+    if (holder) {
+      holder.outerHTML = imagePreviewMarkup(url).replace('class="image-preview"', 'class="image-preview" id="imagePreview"');
+    }
+    const img = $('#imagePreviewImg');
+    const status = $('#imagePreviewStatus');
+    if (img) {
+      img.onload = () => { if (status) { status.textContent = 'Image loaded successfully.'; status.className = 'image-status ok'; } };
+      img.onerror = () => { if (status) { status.textContent = 'Could not load this image URL.'; status.className = 'image-status bad'; } };
+    }
+  };
+  input.addEventListener('input', update);
+  input.addEventListener('change', update);
+}
+
 function viewAdd() {
+  if (!isWhitelisted) {
+    viewRequestCharacter();
+    return;
+  }
   render(`<h2>Add a thing</h2><p class="sub">Anything people can argue about.</p>
     <form id="addForm">
       <label>Name<input type="text" id="fName" maxlength="80" required></label>
       <label>Image URL<input type="url" id="fImageUrl" placeholder="https://example.com/image.jpg"></label>
+      <div id="imagePreview" class="image-preview empty"><div>No image preview yet.</div></div>
       <label>Description<textarea id="fDesc" maxlength="600"></textarea></label>
       <div class="row">
         <button class="primary" id="fSave" type="submit">Add thing</button>
         <button type="button" class="link" data-act="home">Cancel</button>
       </div>
     </form>`);
+  bindImagePreview('fImageUrl');
   $('#addForm').onsubmit = submitThing;
+}
+
+function viewRequestCharacter() {
+  render(`<h2>Request a character</h2>
+    <p class="sub">Only approved contributors can add characters directly. Submit a request and a whitelisted admin can approve or deny it.</p>
+    <form id="requestForm">
+      <label>Name<input type="text" id="fName" maxlength="80" required></label>
+      <label>Image URL<input type="url" id="fImageUrl" placeholder="https://example.com/image.jpg"></label>
+      <div id="imagePreview" class="image-preview empty"><div>No image preview yet.</div></div>
+      <label>Description<textarea id="fDesc" maxlength="600"></textarea></label>
+      <div class="row">
+        <button class="primary" id="requestSave" type="submit">Request character</button>
+        <button type="button" class="link" data-act="home">Cancel</button>
+      </div>
+    </form>`);
+  bindImagePreview('fImageUrl');
+  $('#requestForm').onsubmit = submitCharacterRequest;
+}
+
+async function submitCharacterRequest(e) {
+  e.preventDefault();
+  const name = $('#fName').value.trim(), description = $('#fDesc').value.trim(), imageUrl = $('#fImageUrl').value.trim();
+  if (!name || !user) return;
+  const btn = $('#requestSave'); btn.disabled = true; btn.textContent = 'Submitting...';
+  try {
+    await addDoc(collection(db, 'characterRequests'), {name, description, imageUrl, requestedBy: user.uid, requesterEmail: user.email || '', requesterUsername: username || user.email?.split('@')[0] || 'User', status:'pending', createdAt:serverTimestamp()});
+    toast('Character request submitted.'); viewHome();
+  } catch (err) { toast('Could not submit request: ' + err.message); btn.disabled=false; btn.textContent='Request character'; }
 }
 
 async function submitThing(e) {
   e.preventDefault();
+  if (!isWhitelisted) return viewRequestCharacter();
   const name = $('#fName').value.trim();
   const description = $('#fDesc').value.trim();
   const imageUrl = $('#fImageUrl').value.trim();
@@ -482,9 +597,11 @@ function viewDuel() {
     </div>
     <div class="row duel-actions" style="margin-top:22px">
       <button class="skip" data-act="skip">Skip</button>
-      <button data-act="pairForum">Discuss this matchup</button>
+      <button class="unknown" data-act="unknown">I don't know</button>
+      <button data-act="pairForum">Show discussion</button>
       <button data-act="stop">Stop ranking</button>
     </div>`);
+  openPairDiscussion();
 }
 
 async function vote(side) {
@@ -497,7 +614,14 @@ async function vote(side) {
 
   if (userVotes.has(id)) {
     toast('You already voted on this matchup.');
-    advanceAfterDuel(anchor, win);
+    if (anchor) {
+      const next = rand(availableOpponents(anchor));
+      if (next) { duel.a = anchor; duel.b = next; viewDuel(); return; }
+    } else {
+      const next = nextRandomizedDuel();
+      if (next) { duel = next; viewDuel(); return; }
+    }
+    viewOutOfRankings();
     return;
   }
 
@@ -524,21 +648,9 @@ async function vote(side) {
         }
       }
     } else {
-      const next = rand(availableOpponents(win, [lose.id]));
-      if (next) {
-        duel.anchor = win;
-        duel.a = win;
-        duel.b = next;
-        viewDuel();
-      } else {
-        const nextDuel = nextRandomizedDuel([win.id]);
-        if (!nextDuel) viewOutOfRankings();
-        else {
-          toast(`No new matchups left for ${win.name}. Picking another character.`);
-          duel = nextDuel;
-          viewDuel();
-        }
-      }
+      const nextDuel = nextRandomizedDuel();
+      if (!nextDuel) viewOutOfRankings();
+      else { duel = nextDuel; viewDuel(); }
     }
   } catch (e) {
     toast(e.message || 'Could not save that vote.');
@@ -574,15 +686,32 @@ function skipDuel() {
     }
     return;
   } else {
-    const next = nextRandomizedDuel([a.id]);
-    if (next) {
-      duel = next;
-      viewDuel();
-      return;
-    }
+    const next = nextRandomizedDuel();
+    if (next) { duel = next; viewDuel(); return; }
   }
 
-  viewRankMenu();
+  viewOutOfRankings();
+}
+
+async function unknownDuel() {
+  if (!duel) return;
+  const buttons = document.querySelectorAll('.opt, .skip, .unknown, [data-act="stop"]');
+  buttons.forEach(b => b.disabled = true);
+  try {
+    const wasAnchor = !!duel.anchor;
+    const anchorId = duel.anchor?.id;
+      await markUnknown();
+    if (wasAnchor) {
+      const next = rand(availableOpponents(duel.anchor));
+      if (next) { duel.a=duel.anchor; duel.b=next; viewDuel(); return; }
+      const nextDuel = nextRandomizedDuel([anchorId]);
+      if (nextDuel) { duel=nextDuel; viewDuel(); return; }
+    } else {
+      const nextDuel = nextRandomizedDuel();
+      if (nextDuel) { duel=nextDuel; viewDuel(); return; }
+    }
+    viewOutOfRankings();
+  } catch(e) { toast(e.message || 'Could not save that choice.'); viewDuel(); }
 }
 
 function advanceAfterDuel(anchor, win) {
@@ -604,6 +733,53 @@ function advanceAfterDuel(anchor, win) {
   }
   const nextDuel = nextRandomizedDuel([anchor?.id, win?.id].filter(Boolean));
   duel = nextDuel;
+}
+
+async function editThing(id) {
+  if (!isAdmin) return toast('Admin access required.');
+  const t = things.find(x => x.id === id); if (!t) return;
+  detail.innerHTML = `<button class="x" data-act="close">Close</button><div class="in"><h3>Edit ${esc(t.name)}</h3>
+    <form id="editForm"><label>Name<input id="editName" maxlength="80" value="${esc(t.name)}" required></label>
+    <label>Image URL<input id="editImage" type="url" value="${esc(t.imageUrl || '')}"></label>
+    <div id="imagePreview" class="image-preview empty"><div>No image preview yet.</div></div>
+    <label>Description<textarea id="editDesc" maxlength="600">${esc(t.description || '')}</textarea></label>
+    <button class="primary" type="submit">Save changes</button></form></div>`;
+  detail.classList.add('open'); app.classList.add('shift');
+  bindImagePreview('editImage');
+  $('#editForm').onsubmit = async e => { e.preventDefault(); try { await setDoc(doc(db,'things',id), {name:$('#editName').value.trim(), imageUrl:$('#editImage').value.trim(), description:$('#editDesc').value.trim(), updatedAt:serverTimestamp()}, {merge:true}); await loadThings(); toast('Character updated.'); closeDetail(); viewBoard(); } catch(err){toast('Could not edit character: '+err.message);} };
+}
+
+async function deleteThing(id) {
+  if (!isAdmin) return toast('Admin access required.');
+  const t = things.find(x => x.id === id); if (!t) return;
+  if (!confirm(`Delete ${t.name}? This removes the character from the pool but does not erase historical matchup records.`)) return;
+  try { await deleteDoc(doc(db,'things',id)); things = things.filter(x => x.id !== id); toast(`${t.name} deleted.`); closeDetail(); viewBoard(); } catch(e){toast('Could not delete character: '+e.message);}
+}
+
+async function viewRequests() {
+  if (!isAdmin) return toast('Admin access required.');
+  render('<div class="center sub">Loading requests...</div>');
+  try {
+    const snap = await getDocs(query(collection(db,'characterRequests'), orderBy('createdAt','desc'), limit(100)));
+    const requests = snap.docs.map(d=>({id:d.id,...d.data()}));
+    render(`<div class="row" style="justify-content:space-between"><div><h2>Character requests</h2><p class="sub">Review submitted characters.</p></div><button class="link" data-act="home">Back</button></div>
+      <div class="request-list">${requests.length ? requests.map(r=>`<div class="request-card"><div><h3>${esc(r.name)}</h3><p>${esc(r.description||'')}</p><small>Requested by ${esc(r.requesterUsername || r.requesterEmail || r.requestedBy || 'unknown')} · ${esc(r.status||'pending')}</small></div><div class="row">${r.status==='pending' ? `<button class="primary" data-act="approveRequest" data-id="${esc(r.id)}">Approve</button><button data-act="denyRequest" data-id="${esc(r.id)}">Deny</button>` : ''}</div></div>`).join('') : '<p class="sub">No character requests yet.</p>'}</div>`);
+  } catch(e){toast('Could not load requests: '+e.message); viewHome();}
+}
+
+async function approveRequest(el) {
+  if (!isAdmin) return; const id=el.dataset.id;
+  try {
+    const ref=doc(db,'characterRequests',id), snap=await getDoc(ref); if(!snap.exists()) throw new Error('Request no longer exists.'); const r=snap.data();
+    const d=doc(collection(db,'things')); await setDoc(d,{name:r.name,description:r.description||'',imageUrl:r.imageUrl||'',createdBy:r.requestedBy,createdAt:serverTimestamp(),approvedBy:user.uid});
+    await setDoc(ref,{status:'approved',reviewedBy:user.uid,reviewedAt:serverTimestamp(),thingId:d.id},{merge:true});
+    await loadThings(); toast(`Approved ${r.name}.`); viewRequests();
+  } catch(e){toast('Could not approve request: '+e.message);}
+}
+
+async function denyRequest(el) {
+  if (!isAdmin) return; const id=el.dataset.id;
+  try { await setDoc(doc(db,'characterRequests',id),{status:'denied',reviewedBy:user.uid,reviewedAt:serverTimestamp()},{merge:true}); toast('Request denied.'); viewRequests(); } catch(e){toast('Could not deny request: '+e.message);}
 }
 
 /* ---------- leaderboard / tiers ---------- */
@@ -659,6 +835,7 @@ async function setProfilePicture(id) {
   try {
     await setDoc(doc(db, 'users', user.uid), {
       email: user.email || '',
+      username,
       profileThingId: t.id,
       updatedAt: serverTimestamp()
     }, {merge: true});
@@ -698,6 +875,7 @@ function openDetail(id) {
       <button class="undo-ranking" data-act="undoCharacter" data-id="${esc(t.id)}">
         Undo my rankings for ${esc(t.name)}
       </button>
+      ${isAdmin ? `<div class="row admin-actions"><button data-act="editThing" data-id="${esc(t.id)}">Edit character</button><button class="danger" data-act="deleteThing" data-id="${esc(t.id)}">Delete character</button></div>` : ''}
     </div>`;
 
   detail.classList.add('open');
@@ -732,7 +910,7 @@ function openPairDiscussion() {
   stopDiscussionListener();
   discussionPairId = id;
 
-  detail.innerHTML = `<button class="x" data-act="close" aria-label="Close">Close</button>
+  detail.innerHTML = `<button class="x" data-act="hideForum" aria-label="Hide discussion">Hide</button>
     <div class="forum-head">
       <div class="forum-kicker">MATCHUP DISCUSSION</div>
       <h3>${esc(a.name)} <span>vs</span> ${esc(b.name)}</h3>
@@ -763,7 +941,7 @@ function openPairDiscussion() {
       ? messages.map(m => `<div class="forum-message">
           ${pairDiscussionAvatar(m)}
           <div class="chat-content">
-            <div class="chat-meta"><b>${esc(m.email || 'Unknown user')}</b></div>
+            <div class="chat-meta"><b>${esc(m.username || m.email || 'Unknown user')}</b></div>
             <div class="chat-text">${esc(m.text)}</div>
           </div>
         </div>`).join('')
@@ -789,6 +967,7 @@ async function sendPairDiscussionMessage(e) {
     await addDoc(collection(db, 'pairDiscussions', discussionPairId, 'messages'), {
       uid: user.uid,
       email: user.email || '',
+      username: username || user.email?.split('@')[0] || 'User',
       text,
       profileThingId: profile?.id || null,
       profileImageUrl: profile?.imageUrl || null,
@@ -803,13 +982,41 @@ async function sendPairDiscussionMessage(e) {
   }
 }
 
+function viewUsernameSettings() {
+  render(`<div class="center">
+    <h2>Choose your username</h2>
+    <p class="sub">This name is shown to other users in chat and discussions. Your email remains private to your account.</p>
+    <form id="usernameForm" style="margin:0 auto;text-align:left">
+      <label>Username<input type="text" id="usernameInput" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" value="${esc(username)}" autocomplete="username" required></label>
+      <div class="row"><button class="primary" type="submit">Save username</button><button type="button" data-act="home">Cancel</button></div>
+    </form>
+  </div>`);
+  $('#usernameForm').onsubmit = async e => {
+    e.preventDefault();
+    const value = $('#usernameInput').value.trim();
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(value)) {
+      toast('Username must be 3-24 characters and use only letters, numbers, or underscores.');
+      return;
+    }
+    try {
+      await setDoc(doc(db, 'users', user.uid), {username: value, email: user.email || '', updatedAt: serverTimestamp()}, {merge:true});
+      username = value;
+      updateHeader();
+      toast('Username updated.');
+      viewHome();
+    } catch (e) { toast('Could not save username: ' + e.message); }
+  };
+}
+
 /* ---------- profile / chat ---------- */
 function updateHeader() {
   const t = things.find(x => x.id === profileThingId);
   $('#who').innerHTML = user
     ? `${t ? thumb(t, 'profile-thumb') : '<div class="profile-thumb th">?</div>'}
-       <span>${esc(user.email || '')}</span>
+       <span>${esc(username || user.email || '')}</span>
        <button class="link" data-act="chat">Chat</button>
+       ${isAdmin ? '<button class="link" data-act="requests">Requests</button>' : ''}
+       <button class="link" data-act="username">Username</button>
        <button class="link" data-act="logout">Sign out</button>`
     : '';
 }
@@ -860,7 +1067,7 @@ function viewChat() {
       ? messages.map(m => `<div class="chat-message">
           ${chatAvatarHtml(m)}
           <div class="chat-content">
-            <div class="chat-meta"><b>${esc(m.email || 'Unknown user')}</b></div>
+            <div class="chat-meta"><b>${esc(m.username || m.email || 'Unknown user')}</b></div>
             <div class="chat-text">${esc(m.text)}</div>
           </div>
         </div>`).join('')
@@ -884,6 +1091,7 @@ async function sendChatMessage(e) {
     await addDoc(collection(db, 'chatMessages'), {
       uid: user.uid,
       email: user.email || '',
+      username: username || user.email?.split('@')[0] || 'User',
       text,
       profileThingId: profile?.id || null,
       profileImageUrl: profile?.imageUrl || null,
@@ -946,7 +1154,15 @@ const actions = {
   board: () => viewBoard(),
   detail: el => openDetail(el.dataset.id),
   profile: el => setProfilePicture(el.dataset.id),
+  username: () => viewUsernameSettings(),
   undoCharacter,
+  editThing: el => editThing(el.dataset.id),
+  deleteThing: el => deleteThing(el.dataset.id),
+  requests: () => viewRequests(),
+  approveRequest,
+  denyRequest,
+  unknown: () => unknownDuel(),
+  hideForum: () => closeDetail(),
   chat: () => viewChat(),
   pairForum: () => openPairDiscussion(),
   close: () => closeDetail()
@@ -967,7 +1183,10 @@ onAuthStateChanged(auth, async u => {
 
   if (!u) {
     profileThingId = null;
+    username = '';
     userVotes.clear();
+    userUnknowns.clear();
+    isWhitelisted = false; isAdmin = false;
     stopChatListener();
     updateHeader();
     viewLogin();
@@ -978,8 +1197,12 @@ onAuthStateChanged(auth, async u => {
   render('<div class="center sub">Loading...</div>');
 
   try {
-    await Promise.all([loadThings(), loadUserVotes(), loadProfile()]);
+    await Promise.all([loadThings(), loadUserVotes(), loadUserUnknowns(), loadProfile(), loadPermissions()]);
     updateHeader();
+    if (!username) {
+      viewUsernameSettings();
+      return;
+    }
   } catch (e) {
     toast('Could not load your account data: ' + e.message);
   }
