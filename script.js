@@ -31,6 +31,8 @@ let duel = null;
 let userVotes = new Set();
 let profileThingId = null;
 let chatUnsub = null;
+let discussionUnsub = null;
+let discussionPairId = null;
 let pickedFile = null; // kept for compatibility with the original project
 
 function toast(msg) {
@@ -69,6 +71,53 @@ async function loadProfile() {
   if (!user) return;
   const snap = await getDoc(doc(db, 'users', user.uid));
   if (snap.exists()) profileThingId = snap.data().profileThingId || null;
+}
+
+async function undoCharacterRanking(thingId) {
+  if (!user) throw new Error('You must be signed in.');
+
+  const snap = await getDocs(collection(db, 'users', user.uid, 'votes'));
+  const votes = snap.docs
+    .map(d => ({id: d.id, ...d.data()}))
+    .filter(v => v.a === thingId || v.b === thingId);
+
+  if (!votes.length) return 0;
+
+  // Roll back each vote in its own transaction. This keeps every aggregate
+  // decrement coupled to deletion of the exact user's vote and avoids the
+  // Firestore transaction operation limit for large ranking histories.
+  for (const vote of votes) {
+    const pairRef = doc(db, 'pairs', vote.id);
+    const voteRef = doc(db, 'users', user.uid, 'votes', vote.id);
+
+    await runTransaction(db, async tx => {
+      const [voteSnap, pairSnap] = await Promise.all([
+        tx.get(voteRef),
+        tx.get(pairRef)
+      ]);
+      if (!voteSnap.exists() || !pairSnap.exists()) return;
+
+      const pair = pairSnap.data();
+      const storedVote = voteSnap.data();
+      const aWon = storedVote.winner === pair.a;
+      const nextA = (pair.aWins || 0) - (aWon ? 1 : 0);
+      const nextB = (pair.bWins || 0) - (aWon ? 0 : 1);
+
+      if (nextA < 0 || nextB < 0) {
+        throw new Error(`Cannot undo matchup ${vote.id}: the global vote count is inconsistent.`);
+      }
+
+      tx.set(pairRef, {
+        aWins: nextA,
+        bWins: nextB,
+        updatedAt: serverTimestamp()
+      }, {merge: true});
+      tx.delete(voteRef);
+    });
+  }
+
+  await loadUserVotes();
+  return votes.length;
 }
 
 async function recordResult(winner, loser) {
@@ -278,6 +327,7 @@ function thumb(t, extraClass = '') {
 
 function render(html) {
   stopChatListener();
+  stopDiscussionListener();
   closeDetail();
   app.innerHTML = html;
   window.scrollTo(0, 0);
@@ -432,6 +482,7 @@ function viewDuel() {
     </div>
     <div class="row duel-actions" style="margin-top:22px">
       <button class="skip" data-act="skip">Skip</button>
+      <button data-act="pairForum">Discuss this matchup</button>
       <button data-act="stop">Stop ranking</button>
     </div>`);
 }
@@ -644,6 +695,9 @@ function openDetail(id) {
       <button class="primary profile-pick" data-act="profile" data-id="${esc(t.id)}">
         ${profileThingId === t.id ? '✓ Current profile picture' : 'Set as profile picture'}
       </button>
+      <button class="undo-ranking" data-act="undoCharacter" data-id="${esc(t.id)}">
+        Undo my rankings for ${esc(t.name)}
+      </button>
     </div>`;
 
   detail.classList.add('open');
@@ -654,6 +708,99 @@ function closeDetail() {
   detail.classList.remove('open');
   app.classList.remove('shift');
   document.querySelectorAll('tr.sel').forEach(r => r.classList.remove('sel'));
+}
+
+/* ---------- matchup discussion ---------- */
+function stopDiscussionListener() {
+  if (discussionUnsub) {
+    discussionUnsub();
+    discussionUnsub = null;
+  }
+  discussionPairId = null;
+}
+
+function pairDiscussionAvatar(m) {
+  return m.profileImageUrl
+    ? `<img class="chat-avatar" src="${esc(m.profileImageUrl)}" alt="">`
+    : `<div class="chat-avatar">${esc((m.email || '?')[0].toUpperCase())}</div>`;
+}
+
+function openPairDiscussion() {
+  if (!duel) return;
+  const a = duel.a, b = duel.b;
+  const id = pairId(a.id, b.id);
+  stopDiscussionListener();
+  discussionPairId = id;
+
+  detail.innerHTML = `<button class="x" data-act="close" aria-label="Close">Close</button>
+    <div class="forum-head">
+      <div class="forum-kicker">MATCHUP DISCUSSION</div>
+      <h3>${esc(a.name)} <span>vs</span> ${esc(b.name)}</h3>
+      <p>Discuss this specific pairing. Everyone ranking this matchup sees the same thread.</p>
+    </div>
+    <div class="forum-messages" id="forumMessages"><div class="center sub">Loading discussion...</div></div>
+    <form class="forum-form" id="forumForm">
+      <input type="text" id="forumInput" maxlength="500" placeholder="Make your case..." autocomplete="off" required>
+      <button class="primary" type="submit">Post</button>
+    </form>`;
+
+  detail.classList.add('open');
+  app.classList.add('shift');
+  $('#forumForm').onsubmit = sendPairDiscussionMessage;
+
+  const q = query(
+    collection(db, 'pairDiscussions', id, 'messages'),
+    orderBy('createdAt', 'asc'),
+    limit(100)
+  );
+
+  discussionUnsub = onSnapshot(q, snap => {
+    const messages = snap.docs.map(d => ({id: d.id, ...d.data()}));
+    const box = $('#forumMessages');
+    if (!box || discussionPairId !== id) return;
+
+    box.innerHTML = messages.length
+      ? messages.map(m => `<div class="forum-message">
+          ${pairDiscussionAvatar(m)}
+          <div class="chat-content">
+            <div class="chat-meta"><b>${esc(m.email || 'Unknown user')}</b></div>
+            <div class="chat-text">${esc(m.text)}</div>
+          </div>
+        </div>`).join('')
+      : '<div class="center sub">No discussion yet. Make the first argument.</div>';
+
+    box.scrollTop = box.scrollHeight;
+  }, e => toast('Could not load matchup discussion: ' + e.message));
+}
+
+async function sendPairDiscussionMessage(e) {
+  e.preventDefault();
+  if (!user || !duel || !discussionPairId) return;
+
+  const input = $('#forumInput');
+  const text = input.value.trim();
+  if (!text) return;
+
+  const profile = things.find(t => t.id === profileThingId);
+  const btn = e.submitter;
+  btn.disabled = true;
+
+  try {
+    await addDoc(collection(db, 'pairDiscussions', discussionPairId, 'messages'), {
+      uid: user.uid,
+      email: user.email || '',
+      text,
+      profileThingId: profile?.id || null,
+      profileImageUrl: profile?.imageUrl || null,
+      createdAt: serverTimestamp()
+    });
+    input.value = '';
+    input.focus();
+  } catch (e) {
+    toast('Could not post to the matchup discussion: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ---------- profile / chat ---------- */
@@ -751,6 +898,38 @@ async function sendChatMessage(e) {
   }
 }
 
+async function undoCharacter(el) {
+  const id = el.dataset.id;
+  const t = things.find(x => x.id === id);
+  if (!t) return;
+
+  const voteSnap = await getDocs(collection(db, 'users', user.uid, 'votes'));
+  const hasVotes = voteSnap.docs.some(d => {
+    const v = d.data();
+    return v.a === id || v.b === id;
+  });
+  if (!hasVotes) {
+    toast(`You have no rankings to undo for ${t.name}.`);
+    return;
+  }
+
+  if (!confirm(`Undo all of your rankings involving ${t.name}? This will remove your votes for those matchups and let you rank them again.`)) return;
+
+  el.disabled = true;
+  el.textContent = 'Undoing...';
+  try {
+    const count = await undoCharacterRanking(id);
+    await loadUserVotes();
+    toast(`Undid ${count} ranking${count === 1 ? '' : 's'} for ${t.name}.`);
+    closeDetail();
+    viewBoard();
+  } catch (e) {
+    toast('Could not undo those rankings: ' + e.message);
+    el.disabled = false;
+    el.textContent = `Undo my rankings for ${t.name}`;
+  }
+}
+
 /* ---------- events ---------- */
 const actions = {
   home: () => viewHome(),
@@ -767,7 +946,9 @@ const actions = {
   board: () => viewBoard(),
   detail: el => openDetail(el.dataset.id),
   profile: el => setProfilePicture(el.dataset.id),
+  undoCharacter,
   chat: () => viewChat(),
+  pairForum: () => openPairDiscussion(),
   close: () => closeDetail()
 };
 
