@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Versus</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/*
+  SETUP
+  1. Firebase console: create a project, add a Web app, paste its config into FIREBASE_CONFIG below.
+  2. Enable Authentication > Email/Password, Firestore, and Storage. Add your site's domain under Auth > Settings > Authorized domains.
+  3. Firestore rules:
+     rules_version = '2'; service cloud.firestore { match /databases/{db}/documents {
+       match /things/{id} {
+         allow read: if true;
+         allow create: if request.auth != null && request.resource.data.createdBy == request.auth.uid
+           && request.resource.data.name is string && request.resource.data.name.size() <= 80;
+       }
+       match /pairs/{id} {
+         allow read: if true;
+         allow create: if request.auth != null && request.resource.data.aWins <= 1 && request.resource.data.bWins <= 1;
+         allow update: if request.auth != null
+           && request.resource.data.aWins - resource.data.aWins <= 1
+           && request.resource.data.bWins - resource.data.bWins <= 1;
+       }
+     } }
+  4. Storage rules:
+     rules_version = '2'; service firebase.storage { match /b/{bucket}/o {
+       match /things/{f} { allow read: if true;
+         allow write: if request.auth != null && request.resource.size < 2 * 1024 * 1024
+           && request.resource.contentType.matches('image/.*'); }
+     } }
+*/
+:root{--bg:#eceef1;--card:#fff;--ink:#15171c;--mute:#656b78;--line:#d6d9df;--a:#2b45ff;--b:#ff5a3c;--r:14px}
+@media (prefers-color-scheme:dark){:root{--bg:#14161b;--card:#1d2027;--ink:#eef0f4;--mute:#9298a6;--line:#2c313b;--a:#7d8fff;--b:#ff7a60}}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 "Familjen Grotesk",system-ui,sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:22px;letter-spacing:-.02em;cursor:pointer}
+header h1 i{font-style:normal;color:var(--b)}
+#who{display:flex;align-items:center;gap:10px;color:var(--mute);font-size:14px}
+#who img{width:28px;height:28px;border-radius:50%}
+main{max-width:980px;margin:0 auto;padding:28px 20px 80px;transition:margin .2s}
+h2{font-size:30px;letter-spacing:-.02em;margin:0 0 6px}
+p.sub{color:var(--mute);margin:0 0 24px}
+button,.btn{font:inherit;font-weight:500;border:1px solid var(--ink);background:transparent;color:var(--ink);padding:10px 18px;border-radius:999px;cursor:pointer}
+button:hover{background:var(--ink);color:var(--bg)}
+button.primary{background:var(--a);border-color:var(--a);color:#fff}
+button.primary:hover{filter:brightness(1.1)}
+button.link{border:0;padding:4px 8px;color:var(--mute)}
+button.link:hover{background:none;color:var(--ink)}
+button:disabled{opacity:.5;cursor:default}
+:focus-visible{outline:3px solid var(--a);outline-offset:2px}
+.home{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:24px;text-align:left;display:block;width:100%;color:var(--ink);border-radius:var(--r)}
+.tile:hover{background:var(--card);color:var(--ink);border-color:var(--ink)}
+.tile b{display:block;font-size:22px;letter-spacing:-.01em}
+.tile span{color:var(--mute);font-size:14px}
+form{display:grid;gap:16px;max-width:520px}
+label{display:grid;gap:6px;font-weight:500;font-size:14px}
+input[type=text],textarea{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+textarea{min-height:100px;resize:vertical}
+.drop{display:flex;align-items:center;justify-content:center;min-height:180px;border:2px dashed var(--line);border-radius:var(--r);background:var(--card);overflow:hidden;cursor:pointer;color:var(--mute)}
+.drop img{width:100%;max-height:300px;object-fit:cover}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.pick{display:grid;gap:8px;max-height:60vh;overflow:auto;margin-top:14px}
+.pick button{display:flex;gap:12px;align-items:center;text-align:left;border-radius:12px;border-color:var(--line);background:var(--card);width:100%}
+.pick button:hover{background:var(--card);color:var(--ink);border-color:var(--ink)}
+.th{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--line);flex:none;display:grid;place-items:center;font-weight:700;color:var(--mute)}
+.duel{display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:stretch}
+.vs{align-self:center;font-weight:700;font-size:20px;color:var(--mute)}
+.opt{background:var(--card);border:2px solid var(--line);border-radius:var(--r);padding:0;overflow:hidden;text-align:left;display:flex;flex-direction:column;color:var(--ink)}
+.opt:hover{background:var(--card);color:var(--ink)}
+.opt.l:hover{border-color:var(--a)}.opt.r:hover{border-color:var(--b)}
+.opt .pic{aspect-ratio:4/3;width:100%;object-fit:cover;background:var(--line);display:grid;place-items:center;font-size:64px;font-weight:700;color:var(--mute)}
+.opt div.t{padding:14px 16px 18px}
+.opt b{font-size:20px;display:block}
+.opt span{color:var(--mute);font-size:14px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.opt.anchor{border-color:var(--a)}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--r);overflow:hidden;border:1px solid var(--line)}
+td{padding:10px 14px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+tr.hit{cursor:pointer}tr.hit:hover td,tr.sel td{background:color-mix(in srgb,var(--a) 10%,transparent)}
+td.n{width:48px;color:var(--mute);font-variant-numeric:tabular-nums}
+td.s{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.s small{display:block;color:var(--mute)}
+td.nm{display:flex;gap:12px;align-items:center;font-weight:500}
+aside{position:fixed;top:0;right:0;height:100%;width:360px;max-width:100%;background:var(--card);border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(0,0,0,.12);transform:translateX(100%);transition:transform .2s;overflow:auto;z-index:5}
+aside.open{transform:none}
+aside img,aside .ph{width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--line);display:grid;place-items:center;font-size:72px;font-weight:700;color:var(--mute)}
+aside .in{padding:18px 20px 30px}
+aside h3{font-size:26px;letter-spacing:-.02em;margin:0 0 4px}
+aside .x{position:absolute;top:10px;right:10px;background:var(--card)}
+aside p{white-space:pre-wrap;margin:12px 0}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:999px;display:none;z-index:9}
+.center{text-align:center;padding:70px 0}
+@media (min-width:900px){main.shift{margin-right:380px;margin-left:20px}}
+@media (max-width:700px){
+  .duel{grid-template-columns:1fr}.vs{text-align:center}
+  aside{top:auto;bottom:0;height:75%;width:100%;border-left:0;border-top:1px solid var(--line);transform:translateY(100%);border-radius:18px 18px 0 0}
+  aside.open{transform:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1 data-act="home">Versus<i>.</i></h1>
+  <div id="who"></div>
+</header>
+<main id="app"></main>
+<aside id="detail" aria-live="polite"></aside>
+<div id="toast" role="status"></div>
+
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getFirestore, collection, doc, getDocs, setDoc, increment, serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyClBqIIbvpCqzFow35AYKhNTdLEAJ78mRU",
+    authDomain: "walldatabase.firebaseapp.com",
+    projectId: "walldatabase",
+    storageBucket: "walldatabase.firebasestorage.app",
+    messagingSenderId: "1030865166080",
+    appId: "1:1030865166080:web:c93f7e1c6ffb20a05d9de5"
+};
+
+const fb = initializeApp(FIREBASE_CONFIG);
+const auth = getAuth(fb), db = getFirestore(fb);
+
+const $ = s => document.querySelector(s);
+const app = $('#app'), detail = $('#detail');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const rand = a => a[Math.floor(Math.random() * a.length)];
+let user = null, things = [], duel = null, pickedFile = null;
+
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 3200);
+}
+
+/* ---------- data ---------- */
+async function loadThings() {
+  const snap = await getDocs(collection(db, 'things'));
+  things = snap.docs.map(d => ({id: d.id, ...d.data()}));
+}
+async function loadPairs() {
+  const snap = await getDocs(collection(db, 'pairs'));
+  return snap.docs.map(d => d.data());
+}
+function recordResult(winner, loser) {
+  const [a, b] = [winner.id, loser.id].sort();
+  const aWon = winner.id === a;
+  setDoc(doc(db, 'pairs', a + '_' + b), {
+    a, b,
+    aWins: increment(aWon ? 1 : 0),
+    bWins: increment(aWon ? 0 : 1)
+  }, {merge: true}).catch(e => toast('Could not save that vote: ' + e.message));
+}
+
+/* ---------- Bradley-Terry (MM algorithm) ----------
+   P(i beats j) = p_i / (p_i + p_j). A virtual opponent with strength 1 and one half-win
+   per thing keeps unbeaten / winless things finite. Rating = 1000 + 400*log10(p). */
+function bradleyTerry(list, pairs) {
+  const n = list.length, idx = new Map(list.map((t, i) => [t.id, i]));
+  const W = new Array(n).fill(0.5), games = new Array(n).fill(0), links = [];
+  for (const p of pairs) {
+    const i = idx.get(p.a), j = idx.get(p.b), aw = p.aWins || 0, bw = p.bWins || 0, m = aw + bw;
+    if (i == null || j == null || !m) continue;
+    W[i] += aw; W[j] += bw; games[i] += m; games[j] += m; links.push([i, j, m]);
+  }
+  let p = new Array(n).fill(1);
+  for (let it = 0; it < 300; it++) {
+    const den = p.map(x => 1 / (x + 1));
+    for (const [i, j, m] of links) { const d = m / (p[i] + p[j]); den[i] += d; den[j] += d; }
+    const np = W.map((w, i) => w / den[i]);
+    const delta = np.reduce((s, x, i) => Math.max(s, Math.abs(Math.log(x / p[i]))), 0);
+    p = np;
+    if (delta < 1e-7) break;
+  }
+  return list.map((t, i) => ({...t, rating: 1000 + 400 * Math.log10(p[i]), games: games[i]}))
+             .sort((x, y) => y.rating - x.rating);
+}
+
+async function submitAuth(e) {
+  e.preventDefault();
+  const email = $('#authEmail').value.trim();
+  const password = $('#authPassword').value;
+  const btn = $('#authSubmit');
+  const isRegister = btn.dataset.mode === 'register';
+  btn.disabled = true;
+  btn.dataset.originalText = isRegister ? 'Create account' : 'Sign in';
+  btn.textContent = 'Please wait...';
+
+  try {
+    if (isRegister) {
+      await createUserWithEmailAndPassword(auth, email, password);
+    } else {
+      await signInWithEmailAndPassword(auth, email, password);
+    }
+  } catch (e) {
+    const messages = {
+      'auth/email-already-in-use': 'An account with that email already exists.',
+      'auth/invalid-email': 'Please enter a valid email address.',
+      'auth/invalid-credential': 'Incorrect email or password.',
+      'auth/user-not-found': 'Incorrect email or password.',
+      'auth/wrong-password': 'Incorrect email or password.',
+      'auth/weak-password': 'Password must be at least 6 characters.',
+      'auth/too-many-requests': 'Too many attempts. Please try again later.'
+    };
+    toast(messages[e.code] || 'Authentication failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = btn.dataset.originalText;
+  }
+}
+
+/* ---------- views ---------- */
+function thumb(t) {
+  return t.imageUrl ? `<img class="th" src="${esc(t.imageUrl)}" alt="">` : `<div class="th">${esc((t.name || '?')[0].toUpperCase())}</div>`;
+}
+function render(html) { closeDetail(); app.innerHTML = html; window.scrollTo(0, 0); }
+
+function viewLogin(mode = 'signin') {
+  const register = mode === 'register';
+  render(`<div class="center">
+    <h2>Which one is better?</h2>
+    <p class="sub">Add things, then settle them two at a time. Everyone's votes build one shared leaderboard.</p>
+    <form id="authForm" style="margin:0 auto;text-align:left">
+      <label>Email<input type="email" id="authEmail" autocomplete="email" required></label>
+      <label>Password<input type="password" id="authPassword" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="6" required></label>
+      <button class="primary" id="authSubmit" data-mode="${register ? 'register' : 'signin'}" type="submit">${register ? 'Create account' : 'Sign in'}</button>
+      <button class="link" type="button" data-act="${register ? 'signin' : 'register'}">
+        ${register ? 'Already have an account? Sign in' : 'Need an account? Register'}
+      </button>
+    </form>
+  </div>`);
+  $('#authForm').onsubmit = submitAuth;
+}
+function viewHome() {
+  duel = null;
+  render(`<h2>What now?</h2><p class="sub">${things.length} thing${things.length === 1 ? '' : 's'} in the pool.</p>
+    <div class="home">
+      <button class="tile" data-act="add"><b>Add a thing</b><span>Give it a name, a picture and a description.</span></button>
+      <button class="tile" data-act="rankmenu"><b>Rank things</b><span>Pick winners, one matchup at a time.</span></button>
+      <button class="tile" data-act="board"><b>Leaderboard</b><span>See how everything stacks up.</span></button>
+    </div>`);
+}
+function viewAdd() {
+  pickedFile = null;
+  render(`<h2>Add a thing</h2><p class="sub">Anything people can argue about.</p>
+    <form id="addForm">
+  <label>
+    Name
+    <input type="text" id="fName" maxlength="80" required>
+  </label>
+
+  <label>
+    Image URL
+    <input
+      type="url"
+      id="fImageUrl"
+      placeholder="https://example.com/image.jpg"
+    >
+  </label>
+
+  <label>
+    Description
+    <textarea id="fDesc" maxlength="600"></textarea>
+  </label>
+
+  <div class="row">
+    <button class="primary" id="fSave" type="submit">Add thing</button>
+    <button type="button" class="link" data-act="home">Cancel</button>
+  </div>
+</form>`);
+  $('#addForm').onsubmit = submitThing;
+}
+async function submitThing(e) {
+  e.preventDefault();
+
+  const name = $('#fName').value.trim();
+  const description = $('#fDesc').value.trim();
+  const imageUrl = $('#fImageUrl').value.trim();
+
+  if (!name) return;
+
+  const btn = $('#fSave');
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+
+  try {
+    const d = doc(collection(db, 'things'));
+
+    await setDoc(d, {
+      name,
+      description,
+      imageUrl,
+      createdBy: user.uid,
+      createdAt: serverTimestamp()
+    });
+
+    await loadThings();
+
+    toast('Added ' + name);
+    viewHome();
+  } catch (err) {
+    toast('Could not add it: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Add thing';
+  }
+}
+
+function viewRankMenu() {
+  duel = null;
+  if (things.length < 2) {
+    render(`<h2>Rank things</h2><p class="sub">You need at least two things in the pool to start a matchup.</p>
+      <div class="row"><button class="primary" data-act="add">Add a thing</button><button class="link" data-act="home">Back</button></div>`);
+    return;
+  }
+  render(`<h2>Rank things</h2><p class="sub">Choose how you want to compare.</p>
+    <div class="row"><button class="primary" data-act="rankrandom">Rank random things</button>
+    <button class="link" data-act="home">Back</button></div>
+    <h2 style="font-size:20px;margin-top:32px">Or rank a specific thing</h2>
+    <input type="text" id="q" placeholder="Search things" style="width:100%;max-width:420px">
+    <div class="pick" id="pickList"></div>`);
+  const draw = () => {
+    const q = $('#q').value.toLowerCase();
+    $('#pickList').innerHTML = [...things].sort((a, b) => a.name.localeCompare(b.name))
+      .filter(t => t.name.toLowerCase().includes(q))
+      .map(t => `<button data-act="rankone" data-id="${esc(t.id)}">${thumb(t)}<span>${esc(t.name)}</span></button>`).join('')
+      || '<p class="sub">Nothing matches.</p>';
+  };
+  $('#q').oninput = draw; draw();
+}
+
+function other(exclude, fallbackExclude) {
+  let c = things.filter(t => !exclude.includes(t.id));
+  if (!c.length) c = things.filter(t => !fallbackExclude.includes(t.id));
+  return rand(c);
+}
+function startDuel(anchor) {
+  if (anchor) duel = {anchor, a: anchor, b: other([anchor.id], [anchor.id]), count: 0};
+  else {
+    const a = rand(things);
+    duel = {anchor: null, a, b: other([a.id], [a.id]), count: 0};
+  }
+  viewDuel();
+}
+function card(t, side, extra = '') {
+  const pic = t.imageUrl ? `<img class="pic" src="${esc(t.imageUrl)}" alt="">` : `<div class="pic">${esc((t.name || '?')[0].toUpperCase())}</div>`;
+  return `<button class="opt ${side} ${extra}" data-act="vote" data-side="${side}">${pic}
+    <div class="t"><b>${esc(t.name)}</b><span>${esc(t.description)}</span></div></button>`;
+}
+function viewDuel() {
+  const {a, b, anchor, count} = duel;
+  render(`<h2>Which is better?</h2>
+    <p class="sub">${anchor ? `Ranking <b>${esc(anchor.name)}</b>. ` : ''}${count} vote${count === 1 ? '' : 's'} so far.</p>
+    <div class="duel">${card(a, 'l', anchor ? 'anchor' : '')}<div class="vs">vs</div>${card(b, 'r')}</div>
+    <div class="row" style="margin-top:22px"><button data-act="stop">Stop ranking</button></div>`);
+}
+function vote(side) {
+  const {a, b, anchor} = duel, win = side === 'l' ? a : b, lose = side === 'l' ? b : a;
+  recordResult(win, lose);
+  duel.count++;
+  if (anchor) {
+    // the specific thing stays; the other side is swapped for someone new
+    duel.b = other([anchor.id, b.id], [anchor.id]);
+  } else {
+    // the winner stays; the loser is swapped for someone new
+    const fresh = other([a.id, b.id], [win.id]);
+    duel.a = win; duel.b = fresh;
+  }
+  viewDuel();
+}
+
+async function viewBoard() {
+  render('<div class="center sub">Crunching the numbers...</div>');
+  try {
+    const [pairs] = await Promise.all([loadPairs(), loadThings()]);
+    const rows = bradleyTerry(things, pairs);
+    window.__rows = rows;
+    if (!rows.length) { render(`<h2>Leaderboard</h2><p class="sub">Nothing here yet. Add the first thing.</p><button class="primary" data-act="add">Add a thing</button>`); return; }
+    render(`<div class="row" style="justify-content:space-between"><div><h2>Leaderboard</h2>
+      <p class="sub">Bradley-Terry ratings from ${pairs.reduce((s, p) => s + (p.aWins || 0) + (p.bWins || 0), 0)} votes. Select a row for details.</p></div>
+      <button class="link" data-act="home">Back</button></div>
+      <table>${rows.map((t, i) => `<tr class="hit" tabindex="0" data-act="detail" data-id="${esc(t.id)}">
+        <td class="n">${i + 1}</td>
+        <td><div class="nm">${thumb(t)}<span>${esc(t.name)}</span></div></td>
+        <td class="s">${Math.round(t.rating)}<small>${t.games ? t.games + ' votes' : 'unranked'}</small></td></tr>`).join('')}</table>`);
+  } catch (e) { toast('Could not load the leaderboard: ' + e.message); viewHome(); }
+}
+function openDetail(id) {
+  const rows = window.__rows || [], i = rows.findIndex(t => t.id === id), t = rows[i];
+  if (!t) return;
+  document.querySelectorAll('tr.sel').forEach(r => r.classList.remove('sel'));
+  document.querySelector(`tr[data-id="${CSS.escape(id)}"]`)?.classList.add('sel');
+  detail.innerHTML = `<button class="x" data-act="close" aria-label="Close">Close</button>
+    ${t.imageUrl ? `<img src="${esc(t.imageUrl)}" alt="${esc(t.name)}">` : `<div class="ph">${esc((t.name || '?')[0].toUpperCase())}</div>`}
+    <div class="in"><h3>${esc(t.name)}</h3>
+    <div style="color:var(--mute)">Rank ${i + 1} of ${rows.length}, rating ${Math.round(t.rating)}, ${t.games} vote${t.games === 1 ? '' : 's'}</div>
+    <p>${esc(t.description) || '<span style="color:var(--mute)">No description.</span>'}</p></div>`;
+  detail.classList.add('open'); app.classList.add('shift');
+}
+function closeDetail() {
+  detail.classList.remove('open'); app.classList.remove('shift');
+  document.querySelectorAll('tr.sel').forEach(r => r.classList.remove('sel'));
+}
+
+/* ---------- events ---------- */
+const actions = {
+  home: () => viewHome(),
+  signin: () => viewLogin('signin'),
+  register: () => viewLogin('register'),
+  logout: () => signOut(auth),
+  add: () => viewAdd(),
+  rankmenu: () => viewRankMenu(),
+  rankrandom: () => startDuel(null),
+  rankone: el => startDuel(things.find(t => t.id === el.dataset.id)),
+  vote: el => vote(el.dataset.side),
+  stop: () => viewHome(),
+  board: () => viewBoard(),
+  detail: el => openDetail(el.dataset.id),
+  close: () => closeDetail()
+};
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (el && actions[el.dataset.act]) actions[el.dataset.act](el);
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDetail();
+  if (e.key === 'Enter' && e.target.matches('tr[data-act]')) actions.detail(e.target);
+});
+
+onAuthStateChanged(auth, async u => {
+  user = u;
+  $('#who').innerHTML = u
+    ? `<span>${esc(u.email || '')}</span><button class="link" data-act="logout">Sign out</button>`
+    : '';
+  if (!u) { viewLogin(); return; }
+  render('<div class="center sub">Loading...</div>');
+  try { await loadThings(); } catch (e) { toast('Could not load things: ' + e.message); }
+  viewHome();
+});
+</script>
+</body>
+</html>
