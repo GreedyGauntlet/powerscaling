@@ -279,16 +279,53 @@ function randomAnchor(excludedIds = []) {
   return rand(candidates);
 }
 
-function nextRandomizedDuel(excludedAnchors = []) {
+function nextRandomizedDuel(excludedIds = []) {
   if (things.length < 2) return null;
 
-  const anchors = things.filter(t => !excludedAnchors.includes(t.id));
-  for (const anchor of [...anchors].sort(() => Math.random() - 0.5)) {
-    const opponent = rand(availableOpponents(anchor));
-    if (opponent) return {anchor, a: anchor, b: opponent, count: 0};
+  const excluded = new Set(excludedIds.filter(Boolean));
+  const pairs = [];
+
+  for (let i = 0; i < things.length; i++) {
+    for (let j = i + 1; j < things.length; j++) {
+      const a = things[i];
+      const b = things[j];
+
+      if (excluded.has(a.id) || excluded.has(b.id))
+        continue;
+
+      const id = pairId(a.id, b.id);
+
+      // Don't show pairs the user has already voted on
+      // or explicitly said "I don't know" about.
+      if (userVotes.has(id) || userUnknowns.has(id))
+        continue;
+
+      pairs.push([a, b]);
+    }
   }
 
-  return null;
+  if (pairs.length === 0)
+    return null;
+
+  // Pick a completely new pair.
+  const [a, b] = rand(pairs);
+
+  // Randomize which side each character appears on.
+  if (Math.random() < 0.5) {
+    return {
+      anchor: null,
+      a,
+      b,
+      count: 0
+    };
+  }
+
+  return {
+    anchor: null,
+    a: b,
+    b: a,
+    count: 0
+  };
 }
 
 function startDuel(anchor) {
@@ -297,25 +334,39 @@ function startDuel(anchor) {
     return;
   }
 
+  // A specific character was selected.
   if (anchor) {
     const opponent = rand(availableOpponents(anchor));
+
     if (!opponent) {
       const next = nextRandomizedDuel([anchor.id]);
+
       if (!next) {
         viewOutOfRankings();
         return;
       }
+
       toast(`No new matchups left for ${anchor.name}. Picking another character.`);
       duel = next;
     } else {
-      duel = {anchor, a: anchor, b: opponent, count: 0};
+      duel = {
+        anchor,
+        a: anchor,
+        b: opponent,
+        count: 0
+      };
     }
-  } else {
+  }
+
+  // Random ranking mode.
+  else {
     const next = nextRandomizedDuel();
+
     if (!next) {
       viewOutOfRankings();
       return;
     }
+
     duel = next;
   }
 
@@ -660,15 +711,12 @@ async function vote(side) {
 
 function skipDuel() {
   if (!duel) return;
+
   const {a, b, anchor} = duel;
 
-  /*
-   * Skipping is deliberately not written to Firestore. It only advances the
-   * current session. The same pair can therefore be shown again in a later
-   * session.
-   */
   if (anchor) {
     const next = rand(availableOpponents(anchor, [b.id]));
+
     if (next) {
       duel.a = anchor;
       duel.b = next;
@@ -677,20 +725,29 @@ function skipDuel() {
     }
 
     const nextDuel = nextRandomizedDuel([anchor.id]);
-    if (nextDuel) {
-      toast(`No new matchups left for ${anchor.name}. Picking another character.`);
-      duel = nextDuel;
-      viewDuel();
-    } else {
+
+    if (!nextDuel) {
       viewOutOfRankings();
+      return;
     }
+
+    duel = nextDuel;
+    viewDuel();
     return;
-  } else {
-    const next = nextRandomizedDuel();
-    if (next) { duel = next; viewDuel(); return; }
   }
 
-  viewOutOfRankings();
+  // RANDOM MODE:
+  // Throw away both previous characters and choose
+  // an entirely new pair.
+  const nextDuel = nextRandomizedDuel();
+
+  if (!nextDuel) {
+    viewOutOfRankings();
+    return;
+  }
+
+  duel = nextDuel;
+  viewDuel();
 }
 
 async function unknownDuel() {
