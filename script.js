@@ -588,7 +588,7 @@ function viewDuel() {
   if (!duel) return;
   const {a, b, anchor, count} = duel;
 
-  render(`<h2>Which is better?</h2>
+  render(`<h2>Which is stronger</h2>
     <p class="sub">${anchor ? `Ranking <b>${esc(anchor.name)}</b>. ` : ''}${count} vote${count === 1 ? '' : 's'} this session.</p>
     <div class="duel">
       ${card(a, 'l', anchor ? 'anchor' : '')}
