@@ -635,6 +635,10 @@ function card(t, side, extra = '') {
   </button>`;
 }
 
+function isMobile() {
+  return window.matchMedia("(max-width: 700px)").matches;
+}
+
 function viewDuel() {
   if (!duel) return;
   const {a, b, anchor, count} = duel;
@@ -652,7 +656,9 @@ function viewDuel() {
       <button data-act="pairForum">Show discussion</button>
       <button data-act="stop">Stop ranking</button>
     </div>`);
-  openPairDiscussion();
+if (!isMobile()) {
+  openPairDiscussion(duel);
+}
 }
 
 async function vote(side) {
